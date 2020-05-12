@@ -5,7 +5,7 @@
 /////      //    // /        //  //     //   //  //   //   //  //  //    //
 /////     //    // //////  //    //    // ///   //    //   ////   //    //
 /////
-/////     HEX DRUM is a midi-capable expanded port of the "big button" by 
+/////     HEX DRUM is a midi-capable expanded port of the "big button" by
 //////       look mum no computer
 /////     modified by extralife in 2020
 /////        extralifedisco@gmail.com
@@ -70,12 +70,16 @@ const int ButtonDelete = 7;
 #define CLOCK_PULSE_LENGTH 10 //milliseconds
 
 //loop operators
-int i; 
+int i;
 int ii;
 
 //Clock Reset Keepers
 int ClockKeep = 0;
 int looper = 0;
+int step_duration_ms = 125; // 1/16th note at 120bpm is default - use for quantization
+int step_duration_ms_half = 62;
+long step_time = 0;
+long button_time = 0;
 //int buttonPushCounter = 0;   // counter for the number of button presses
 
 //Various button states
@@ -104,7 +108,7 @@ int shiftKnobAnalogValueSteps[9] = { 0, 127, 254, 383, 511, 638, 767, 895, 1000 
 
 
 
-int Channel = 1; //active selected channel
+int Channel = 0; //active selected channel
 int ClockState = 0; //whether or not clock input is high
 int steps = 0; //beginning number of the steps in the sequence adjusted by StepLength
 
@@ -153,28 +157,28 @@ void setup()
   readChannelSelectKnob();
   readShiftKnob();
 
-  attachInterrupt(ClockIn, isr, RISING);
+  attachInterrupt(ClockIn, onClockIn, RISING);
 }
 
 int StepLength = 0; //analog value storage
 void readStepsKnob(){
   StepLength = 1024 - analogRead(1);
-  if (0 < StepLength) {         steps = 2; }
-  else if (200 < StepLength) {  steps = 4; }
-  else if (500 < StepLength) {  steps = 8; }
-  else if (800 < StepLength) {  steps = 16;}
-  else if (1000 < StepLength) { steps = 32;}
+  if      (StepLength < 200)  { steps = 2; }
+  else if (StepLength < 500)  { steps = 4; }
+  else if (StepLength < 800)  { steps = 8; }
+  else if (StepLength < 1000) { steps = 16;}
+  else                        { steps = 32;}
 }
 
 int CHANNELSELECT = 0; //analog value storage
 void readChannelSelectKnob(){
   CHANNELSELECT= analogRead(0);
-  if(20>CHANNELSELECT) {       Channel = 1; } 
-  else if(170<CHANNELSELECT) { Channel = 2; } 
-  else if(240<CHANNELSELECT) { Channel = 3; } 
-  else if(420<CHANNELSELECT) { Channel = 4; } 
-  else if(750<CHANNELSELECT) { Channel = 5; } 
-  else if(1000<CHANNELSELECT){ Channel = 6; }
+  if(CHANNELSELECT < 170) {       Channel = 0; }
+  else if(CHANNELSELECT < 240) { Channel = 1; }
+  else if(CHANNELSELECT < 420) { Channel = 2; }
+  else if(CHANNELSELECT < 750) { Channel = 3; }
+  else if(CHANNELSELECT < 1000){ Channel = 4; }
+  else {                         Channel = 5; }
 }
 
 
@@ -182,7 +186,7 @@ void readShiftKnob(){
   //SHIFT knob - note swap with commented line for reversed pot pins
   shiftKnobVal = 1024 - analogRead(2);
   //KnobVal = analogRead(2);
-  
+
   int i = 0;
   while (i <= 8) {
     if (shiftKnobAnalogValueSteps[i] > shiftKnobVal) {
@@ -191,7 +195,7 @@ void readShiftKnob(){
     }
     i++;
   }
-  
+
   int diff = abs(shiftKnobVal - shiftOldKnobVal);
   if (diff > TOLERANCE) {
     shiftChannelValues[Channel] = shiftState;
@@ -208,11 +212,15 @@ void blink(int output) {
 }
 
 
-//  isr() - quickly handle interrupts from the clock input
-void isr()
+void onClockIn()
 {
   ClockState = HIGH;
   digitalWrite(ClockOut, HIGH);
+
+  //count tempo for quantization
+  step_duration_ms = millis() - step_time;
+  step_time = millis();
+  step_duration_ms_half = step_duration_ms / 2;
 }
 
 // cast true/false values to HIGH/LOW to simplify code
@@ -221,23 +229,38 @@ void digitalWriteCast(int pinNumber, bool pinState) {
 }
 
 void readButtons(){
-  // BigButtonState = digitalRead(BigButton);
+  BigButtonState = digitalRead(BigButton);
   DeleteButtonState = digitalRead(ButtonDelete);
   ClearButtonState  = digitalRead(ButtonClear);
   BankButtonState   = digitalRead(ButtonBank);
   ResetButtonState  = digitalRead(ResetButton);
   FillButtonState   = digitalRead(FillButton);
-  
-  //Read big button input and write to current sequence step
-  if (digitalRead(BigButton) != BigButtonState) {
-    BigButtonState = BigButtonState == HIGH ? LOW : HIGH; //flip button state
-    if (BigButtonState == HIGH) {
-      Sequence[Channel + bankChannelStates[Channel]][(ClockKeep + shiftChannelValues[Channel]) % 32] = 1;
-    }
+
+  //Read big button input and write to nearest sequence step
+  if (BigButtonState != prevBigButtonState) {
     prevBigButtonState = BigButtonState;
+    if (BigButtonState == HIGH) {
+
+      button_time = millis() - step_time; // get current step offset in ms
+      int step_quantize_advance = 0;
+      if (button_time > step_duration_ms_half) { //if we're closer to the current step activate and trigger
+        step_quantize_advance = 1; //otherwise activate the next step
+      } else {
+        digitalWrite(outputs[Channel], HIGH); 
+      }
+
+      Sequence[Channel*2 + bankChannelStates[Channel]][(looper + shiftChannelValues[Channel] + step_quantize_advance) % steps] = 1;
+    }
   }
 
   delay (5);// necessary? todo delete
+
+  if (ClearButtonState == HIGH) {
+    for (i = 0; i < 32; i++) {
+      Sequence[Channel*2 + bankChannelStates[Channel]][i] = 0;
+    }
+  }                                                 //This is the clear button
+
 
   //debounce bank button and latch state to channel
   if (BankButtonState != BankButtonPrevState && millis() - time > debounce) {
@@ -249,7 +272,7 @@ void readButtons(){
   }
 
   if (DeleteButtonState == HIGH) {
-    Sequence[Channel + bankChannelStates[Channel]][looper + 1] = 0;
+    Sequence[Channel*2 + bankChannelStates[Channel]][looper + 1] = 0;
   } //This is the delete button
 
   //todo implement reset to default state with shift button
@@ -280,8 +303,8 @@ void loop()
       for (i = 0; i < 6; i++) {
         //set each channel output gate high or low per current step (or high if fill button is pressed)
         digitalWriteCast(
-          outputs[i], 
-          Sequence[i + bankChannelStates[i]][(looper + shiftChannelValues[i]) % 32] || 
+          outputs[i],
+          Sequence[i*2 + bankChannelStates[i]][(looper + shiftChannelValues[i]) % steps] ||
            (FillButtonState == HIGH && i == Channel));
       }
 
@@ -300,7 +323,7 @@ void loop()
       ClockState = LOW; //ready for next clock pulse
   }
 
-  
+
   readShiftKnob();
 
   readStepsKnob();
@@ -308,7 +331,7 @@ void loop()
   readChannelSelectKnob();
 
   readButtons();
-  
+
   if (looper >= steps) {
     looper = 0; //this bit starts the sequence over again
   }
@@ -317,5 +340,3 @@ void loop()
     ClockKeep = 0;
   }
 }
-
-
