@@ -55,21 +55,28 @@ SoftwareSerial midiSerial(0, 1); // RX, TX
 #define MIDI_NOTE_ON 144
 #define MIDI_NOTE_OFF 128
 
+#define MIDI_CLOCK          0xF8
+#define MIDI_CLOCK_START    0XFA
+#define MIDI_CLOCK_CONTINUE 0xFB
+#define MIDI_CLOCK_STOP     0xFC
+#define MIDI_CLOCK_DIVISION 6    //MIDI uses 24 steps per quarter note, 6 steps is a sixteenth note. use smaller values for faster clock 
 //MIDI states
 #define STATE_NONE      0
 #define STATE_NOTE_ON   1
 #define STATE_NOTE_PLAY 2
 #define STATE_NOTE_OFF  3
 int midiState = STATE_NONE;
+int midiClocks = 0;
+
 
 const int midi_notes[6] = { //route input notes to output gates, standard GM midi drum mapping
-  12, //C1 
-  14, //D1
-  16, //E1
-  17, //F1
-  18, //G1
-  19  //A2
- }
+  36, //C1 
+  38, //D1
+  40, //E1
+  41, //F1
+  43, //G1
+  45  //A2
+ };
 
 
 const int OUT1 = 8;
@@ -335,15 +342,33 @@ void receiveMIDI(){
             // remove channel info
             midiChannel = midiByte & B00001111;
             midiCommand = midiByte & B11110000;
-            if (midiChannel == MIDI_CHANNEL - 1)
-            {
+            if (midiChannel == MIDI_CHANNEL - 1){
                 if (midiCommand == MIDI_NOTE_ON){
                     midiState = STATE_NOTE_ON;
                 } else  if (midiCommand == MIDI_NOTE_OFF) {
                     midiState = STATE_NOTE_OFF;
                 }
-            }
+            } else if (midiByte == MIDI_CLOCK_START || midiByte == MIDI_CLOCK_CONTINUE) {
+                // midiState = STATE_NONE;
+                midiClocks = 0;
+                looper = 0;
+                ClockKeep = 0;
+                onClockIn();
+            } else if (midiByte == MIDI_CLOCK) {
+                midiClocks += 1;
+                // digitalWrite(BankLED, (midiClocks % 2) > 0 ? HIGH : LOW);
+                if (midiClocks == MIDI_CLOCK_DIVISION) {
+                  onClockIn();
+                  midiClocks = 0;
+                }
+              // midiState = STATE_CLOCK_START;
+            } else if (midiCommand == MIDI_CLOCK_STOP) {
+                midiClocks = 0;
+                // looper = 0;
+                // ClockKeep = 0;
+            } 
             break;
+
 
         case STATE_NOTE_ON:
             midiNote = midiByte;
@@ -357,14 +382,20 @@ void receiveMIDI(){
             
             if (midiVelocity > 0 && midiState == STATE_NOTE_PLAY)
             {
-                digitalWrite(BankLED, HIGH);
-                if (midiNote >= 64 && midiNote <= 70) {
-                  digitalWrite(outputs[midiNote-64], HIGH);
+                // digitalWrite(BankLED, HIGH);
+                for (i = 0; i < 6; i++) {
+                  if (midiNote == midi_notes[i]) {
+                    digitalWrite(outputs[i], HIGH);
+                    break;
+                  }
                 }
             } else { //receiving a note off message or zero velocity message
-                digitalWrite(BankLED, LOW);
-                if (midiNote >= 64 && midiNote <= 70) {
-                  digitalWrite(outputs[midiNote-64], LOW);
+                // digitalWrite(BankLED, LOW);
+                for (i = 0; i < 6; i++) {
+                  if (midiNote == midi_notes[i]) {
+                    digitalWrite(outputs[i], LOW);
+                    break;
+                  }
                 }
             }
 
