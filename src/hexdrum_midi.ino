@@ -1,12 +1,12 @@
 //////
-/////         //    // /////// //   //     ////     //////    //  //  ///   //
-/////        //    // /        // //      //  //   //  ///   //  //  // / ///
-/////       //////// ////      ///       //   //  // ///    //  //  //  / //
-/////      //    // /        //  //     //   //  //   //   //  //  //    //
-/////     //    // //////  //    //    // ///   //    //   ////   //    //
+/////         H    H  EEEEE  X      X    DDDD    RRRR    U   U  M    M
+/////        H    H  E        X   X     D  DD   R   R   U   U  M MM M
+/////       HHHHHH  EEE        X       D    D  R RR    U   U  M  M M
+/////      H    H  E         X  X     D   DD  R   R   U   U  M    M
+/////     H    H  EEEEEE  X      X   DD DD   R     R   UU   M    M
 /////
 /////     HEX DRUM is a midi-capable expanded port of the "big button" by
-//////       look mum no computer
+/////        look mum no computer
 /////     modified by extralife in 2020
 /////        extralifedisco@gmail.com
 /////     no commercial use permitted
@@ -44,9 +44,33 @@
 // LED (big button LED) pin 20 (A6)
 
 
+const byte MIDI_CHANNEL = 16; //set this to receive midi note data on a specific channel 
+//NOTE: non-zero indexed, range is 1-16 (not 0-15)
 
 #include <Arduino.h>
 #include <SoftwareSerial.h>
+
+SoftwareSerial midiSerial(0, 1); // RX, TX
+// MIDI commands
+#define MIDI_NOTE_ON 144
+#define MIDI_NOTE_OFF 128
+
+//MIDI states
+#define STATE_NONE      0
+#define STATE_NOTE_ON   1
+#define STATE_NOTE_PLAY 2
+#define STATE_NOTE_OFF  3
+int midiState = STATE_NONE;
+
+const int midi_notes[6] = { //route input notes to output gates, standard GM midi drum mapping
+  12, //C1 
+  14, //D1
+  16, //E1
+  17, //F1
+  18, //G1
+  19  //A2
+ }
+
 
 const int OUT1 = 8;
 const int OUT2 = 9;
@@ -68,6 +92,7 @@ const int ButtonDelete = 7;
 
 #define TOLERANCE 0
 #define CLOCK_PULSE_LENGTH 10 //milliseconds
+long pulsekeeper;
 
 //loop operators
 int i;
@@ -110,6 +135,7 @@ int shiftKnobAnalogValueSteps[9] = { 0, 127, 254, 383, 511, 638, 767, 895, 1000 
 
 int Channel = 0; //active selected channel
 int ClockState = 0; //whether or not clock input is high
+int PulseState = 0; //whether or not clock/gate output is high
 int steps = 0; //beginning number of the steps in the sequence adjusted by StepLength
 
 
@@ -158,6 +184,8 @@ void setup()
   readShiftKnob();
 
   attachInterrupt(ClockIn, onClockIn, RISING);
+
+  midiSerial.begin(31250);
 }
 
 int StepLength = 0; //analog value storage
@@ -253,7 +281,7 @@ void readButtons(){
     }
   }
 
-  delay (5);// necessary? todo delete
+  //delay (5);// necessary? todo delete
 
   if (ClearButtonState == HIGH) {
     for (i = 0; i < 32; i++) {
@@ -291,9 +319,67 @@ void readButtons(){
 
 
 
+ // received MIDI data
+byte midiByte;
+byte midiChannel;
+byte midiCommand;
+byte midiNote;
+byte midiVelocity;
+
+void receiveMIDI(){
+ if (midiSerial.available() > 0) {
+        // read MIDI byte
+        midiByte = midiSerial.read();
+        switch (midiState) {
+        case STATE_NONE:
+            // remove channel info
+            midiChannel = midiByte & B00001111;
+            midiCommand = midiByte & B11110000;
+            if (midiChannel == MIDI_CHANNEL - 1)
+            {
+                if (midiCommand == MIDI_NOTE_ON){
+                    midiState = STATE_NOTE_ON;
+                } else  if (midiCommand == MIDI_NOTE_OFF) {
+                    midiState = STATE_NOTE_OFF;
+                }
+            }
+            break;
+
+        case STATE_NOTE_ON:
+            midiNote = midiByte;
+            midiState = STATE_NOTE_PLAY;
+            break;
+            
+        case STATE_NOTE_OFF:
+            midiNote = midiByte;
+        case STATE_NOTE_PLAY:
+            midiVelocity = midiByte;
+            
+            if (midiVelocity > 0 && midiState == STATE_NOTE_PLAY)
+            {
+                digitalWrite(BankLED, HIGH);
+                if (midiNote >= 64 && midiNote <= 70) {
+                  digitalWrite(outputs[midiNote-64], HIGH);
+                }
+            } else { //receiving a note off message or zero velocity message
+                digitalWrite(BankLED, LOW);
+                if (midiNote >= 64 && midiNote <= 70) {
+                  digitalWrite(outputs[midiNote-64], LOW);
+                }
+            }
+
+            midiState = STATE_NONE;            
+            break;
+            
+        } // switch
+
+    } // mySerial.available()
+
+}
+
 void loop()
 {
-  if (ClockState == HIGH) {
+  if (ClockState == HIGH && PulseState == LOW) {
       ClockKeep += 1;
       looper += 1;
       // for (i = 0; i < 6; i++) { //track each channel independently?
@@ -314,13 +400,18 @@ void loop()
         digitalWrite(BankLED, bankChannelStates[Channel] == 1 ? HIGH : LOW);
       }
 
-      delay(CLOCK_PULSE_LENGTH);
+      ClockState = LOW;
+      PulseState = HIGH;
+      pulsekeeper = millis();
+      //delay(CLOCK_PULSE_LENGTH); //remove delay calls to fix serial input
+  }
 
+  if (PulseState == HIGH && millis() - pulsekeeper > CLOCK_PULSE_LENGTH){
       digitalWrite(ClockOut, LOW); //clock falling edge
       for (i = 0; i < 6; i++) {
         digitalWrite(outputs[i], LOW); //gate falling edge
       }
-      ClockState = LOW; //ready for next clock pulse
+      PulseState = LOW; //ready for next clock pulse
   }
 
 
@@ -331,6 +422,8 @@ void loop()
   readChannelSelectKnob();
 
   readButtons();
+
+  receiveMIDI();
 
   if (looper >= steps) {
     looper = 0; //this bit starts the sequence over again
