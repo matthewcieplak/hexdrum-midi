@@ -68,6 +68,8 @@ SoftwareSerial midiSerial(0, 1); // RX, TX
 int midiState = STATE_NONE;
 int midiClocks = 0;
 
+int multiplexor = 0;
+
 
 const int midi_notes[6] = { //route input notes to output gates, standard GM midi drum mapping
   36, //C1 
@@ -77,6 +79,8 @@ const int midi_notes[6] = { //route input notes to output gates, standard GM mid
   43, //G1
   45  //A2
  };
+ int midiStates[6] = { 0, 0, 0, 0, 0, 0 };
+
 
 
 const int OUT1 = 8;
@@ -96,6 +100,8 @@ const int ButtonClear  = 4;         //reset button for the moment
 const int FillButton   = 5;
 const int ResetButton  = 6;
 const int ButtonDelete = 7;
+const int AltButton    = A4;
+const bool ALT_BUTTON_ENABLED = true; //disable (set false) to prevent weird behavior if you don't have this button!!!!
 
 #define TOLERANCE 0
 #define CLOCK_PULSE_LENGTH 10 //milliseconds
@@ -120,9 +126,11 @@ int prevBigButtonState = 0;
 int DeleteButtonState = 0;
 int prevDeleteButtonState = 0;
 int ClearButtonState = 0;
+int prevClearButtonState = 0;
 int ResetButtonState = 0;
 int prevResetButtonState = 0;
 int FillButtonState = 0;
+int AltButtonState = 0;
 
 //Bank Button Latching states
 long time = 0;
@@ -143,11 +151,15 @@ int shiftKnobAnalogValueSteps[9] = { 0, 127, 254, 383, 511, 638, 767, 895, 1000 
 int Channel = 0; //active selected channel
 int ClockState = 0; //whether or not clock input is high
 int PulseState = 0; //whether or not clock/gate output is high
+int HalfClockState = 0;
 int steps = 0; //beginning number of the steps in the sequence adjusted by StepLength
-
 
 bool Sequence[12][43]; //max length is really 32 but shift knob enables some overflow
 bool DefaultSequence[12][43];
+
+//mute/solo function replaces delete button
+bool muteEnabled = false;
+bool soloEnabled = false;
 
 void setup()
 {
@@ -167,6 +179,7 @@ void setup()
   pinMode(ButtonBank, INPUT);
   pinMode(ResetButton, INPUT);
   pinMode(FillButton, INPUT);
+  pinMode(AltButton, INPUT);
 
 
   for (i = 0; i < 14; i++) {
@@ -270,45 +283,87 @@ void readButtons(){
   BankButtonState   = digitalRead(ButtonBank);
   ResetButtonState  = digitalRead(ResetButton);
   FillButtonState   = digitalRead(FillButton);
-
+  if (ALT_BUTTON_ENABLED) {
+    AltButtonState  = digitalRead(AltButton);
+  }
   //Read big button input and write to nearest sequence step
   if (BigButtonState != prevBigButtonState) {
     prevBigButtonState = BigButtonState;
     if (BigButtonState == HIGH) {
 
-      button_time = millis() - step_time; // get current step offset in ms
-      int step_quantize_advance = 0;
-      if (button_time > step_duration_ms_half) { //if we're closer to the current step activate and trigger
-        step_quantize_advance = 1; //otherwise activate the next step
-      } else {
-        digitalWrite(outputs[Channel], HIGH); 
+      if (AltButtonState == HIGH) { //alt "listen mode" aka "audition" - play a sound without adding it to the sequence
+        if (!Sequence[Channel*2 + bankChannelStates[Channel]][(looper + shiftChannelValues[Channel]) % steps]) { //don't re-trigger if step is already active
+          digitalWrite(outputs[Channel], HIGH); 
+        }
+      } else { //add a new step to the sequence
+        button_time = millis() - step_time; // get current step offset in ms
+        int step_quantize_advance = 0;
+        if (button_time > step_duration_ms_half) { //if we're closer to the current step, activate and trigger
+          step_quantize_advance = 1; //otherwise activate the next step
+        } else {
+          digitalWrite(outputs[Channel], HIGH); 
+        }
+        Sequence[Channel*2 + bankChannelStates[Channel]][(looper + shiftChannelValues[Channel] + step_quantize_advance) % steps] = 1;
       }
-
-      Sequence[Channel*2 + bankChannelStates[Channel]][(looper + shiftChannelValues[Channel] + step_quantize_advance) % steps] = 1;
+    } else {
+      digitalWrite(outputs[Channel], LOW); //disable gate out on button release
     }
   }
 
-  //delay (5);// necessary? todo delete
 
-  if (ClearButtonState == HIGH) {
-    for (i = 0; i < 32; i++) {
-      Sequence[Channel*2 + bankChannelStates[Channel]][i] = 0;
+  if (ClearButtonState != prevClearButtonState) {
+    prevClearButtonState = ClearButtonState;
+    if (ClearButtonState == HIGH) {
+      if (AltButtonState == HIGH) { //shift clear + clear all active banks
+        for (ii = 0; ii < 6; ii++) {
+          for (i = 0; i < 32; i++) {
+            Sequence[ii*2 + bankChannelStates[ii]][i] = 0;
+          }
+        }    
+      } else { //clear current channel
+        for (i = 0; i < 32; i++) {
+          Sequence[Channel*2 + bankChannelStates[Channel]][i] = 0;
+        }
+      }
     }
-  }                                                 //This is the clear button
-
+  }
 
   //debounce bank button and latch state to channel
   if (BankButtonState != BankButtonPrevState && millis() - time > debounce) {
     BankButtonPrevState = BankButtonState;
     time = millis();
     if (BankButtonState == HIGH) {
-      bankChannelStates[Channel] = bankChannelStates[Channel] == 1 ? 0 : 1; //flip bit and latch rather than assign from button state
+      if (AltButtonState == HIGH) {
+        for(i = 0; i < 6; i++) {
+          bankChannelStates[i] = bankChannelStates[i] == 1 ? 0 : 1; //flip bit and latch rather than assign from button state
+        }
+      } else {
+        bankChannelStates[Channel] = bankChannelStates[Channel] == 1 ? 0 : 1; //flip bit and latch rather than assign from button state
+      }
     }
   }
 
-  if (DeleteButtonState == HIGH) {
-    Sequence[Channel*2 + bankChannelStates[Channel]][looper + 1] = 0;
-  } //This is the delete button
+  //MJC - 5/20/2020 - replacing delete function with mute/solo. uncomment next 3 lines for original delete
+  // if (DeleteButtonState == HIGH) {
+  //   Sequence[Channel*2 + bankChannelStates[Channel]][looper + 1] = 0;
+  // } //This is the delete button
+
+  //MUTE/SOLO
+  if (DeleteButtonState != prevDeleteButtonState) {
+    if (DeleteButtonState == HIGH) {
+      if (AltButtonState) {
+        soloEnabled = true;
+        muteEnabled = false;
+      } else {
+        muteEnabled = true;
+        soloEnabled = false;
+      }
+    } else {
+      soloEnabled = false;
+      muteEnabled = false;
+    }
+    prevDeleteButtonState = DeleteButtonState;
+  }
 
   //todo implement reset to default state with shift button
   if (ResetButtonState != prevResetButtonState) {
@@ -385,7 +440,14 @@ void receiveMIDI(){
                 // digitalWrite(BankLED, HIGH);
                 for (i = 0; i < 6; i++) {
                   if (midiNote == midi_notes[i]) {
-                    digitalWrite(outputs[i], HIGH);
+                    if (muteEnabled && i == Channel) {
+                      // don't play muted channel
+                    } else if (soloEnabled && i != Channel) {
+                      //don't play un-soloed
+                    } else {
+                      digitalWrite(outputs[i], HIGH);
+                      midiStates[i] = 1;
+                    }
                     break;
                   }
                 }
@@ -394,6 +456,7 @@ void receiveMIDI(){
                 for (i = 0; i < 6; i++) {
                   if (midiNote == midi_notes[i]) {
                     digitalWrite(outputs[i], LOW);
+                    midiStates[i] = 0;
                     break;
                   }
                 }
@@ -419,10 +482,20 @@ void loop()
       digitalWrite(ClockOut, HIGH); //clock rising edge
       for (i = 0; i < 6; i++) {
         //set each channel output gate high or low per current step (or high if fill button is pressed)
-        digitalWriteCast(
-          outputs[i],
-          Sequence[i*2 + bankChannelStates[i]][(looper + shiftChannelValues[i]) % steps] ||
-           (FillButtonState == HIGH && i == Channel));
+        if (muteEnabled && i == Channel) {
+          // don't play muted channel
+        } else {
+          if (soloEnabled && i != Channel) {
+            //don't play non soloed channel
+          } else if (midiStates[i]) {
+            //don't overlap midi notes
+          } else {
+            digitalWriteCast(
+              outputs[i],
+              Sequence[i*2 + bankChannelStates[i]][(looper + shiftChannelValues[i]) % steps] ||
+              (FillButtonState == HIGH && i == Channel));
+          }
+        }
       }
 
       if ((ClockKeep - 1) % 4 == 0) { //blink led every 4th step, typically quarter notes, invert for bank 2
@@ -432,28 +505,49 @@ void loop()
       }
 
       ClockState = LOW;
+      HalfClockState = LOW;
       PulseState = HIGH;
       pulsekeeper = millis();
       //delay(CLOCK_PULSE_LENGTH); //remove delay calls to fix serial input
+  
+  
+  } else if (FillButtonState == HIGH && AltButtonState == HIGH) { //ALT+FILL = 32nd note roll
+    if (HalfClockState == LOW) {
+      if (millis() - step_time >= step_duration_ms_half) {
+        HalfClockState = HIGH;
+        digitalWrite(outputs[Channel], HIGH);
+        pulsekeeper = millis();
+        PulseState = HIGH;
+      }
+    }
   }
 
   if (PulseState == HIGH && millis() - pulsekeeper > CLOCK_PULSE_LENGTH){
+      
       digitalWrite(ClockOut, LOW); //clock falling edge
       for (i = 0; i < 6; i++) {
-        digitalWrite(outputs[i], LOW); //gate falling edge
+        if (midiStates[i] == 0) { //don't overwrite midi notes
+          digitalWrite(outputs[i], LOW); //gate falling edge
+        }
       }
       PulseState = LOW; //ready for next clock pulse
   }
 
 
-  readShiftKnob();
+  multiplexor += 1;
 
-  readStepsKnob();
+  if (multiplexor == 1) { //break up analogReads as they lag the clock and can cause dropped steps
+    readShiftKnob();
+  } else if (multiplexor == 2) {
+    readStepsKnob();
+  } else if (multiplexor == 3) {
+    readChannelSelectKnob();
+  } else if (multiplexor > 3) {
+    readButtons();
+    multiplexor = 0;
+  }
 
-  readChannelSelectKnob();
-
-  readButtons();
-
+  //always read midi or we could miss steps
   receiveMIDI();
 
   if (looper >= steps) {
