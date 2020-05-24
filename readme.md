@@ -8,7 +8,7 @@ The code is completely rewritten for easier editing and optimizations and to add
 * Clear all/shift all banks
 * Mute/solo
 
-![Hexdrum](https://github.com/matthewcieplak/hexdrum-midi/raw/master/fritzing/big%20button%20midi_bb.png)
+![Hexdrum](https://github.com/matthewcieplak/hexdrum-midi/raw/master/hexdrum.jpg)
 
 ## MIDI input
 
