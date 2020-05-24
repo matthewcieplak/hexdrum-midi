@@ -16,11 +16,12 @@ MIDI input is received by default on Channel 16 and notes received on 6 standard
 
 MIDI input is acheived through a standard 6n138 optocoupler on a small daughterboard. MIDI THRU can be added with a 2n3904 transistor and a few extra resistors.
 
---- Stripboard layout ---
+
+### Stripboard layout
 ![Hexdrum MIDI input stripboard layout](https://github.com/matthewcieplak/hexdrum-midi/raw/master/fritzing/big%20button%20midi_bb.png)
 
 
---- Schematic ---
+### Schematic
 ![Hexdrum MIDI input stripboard layout](https://github.com/matthewcieplak/hexdrum-midi/raw/master/fritzing/big%20button%20midi_schem.png)
 
 
